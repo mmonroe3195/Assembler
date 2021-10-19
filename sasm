@@ -1,0 +1,1408 @@
+#!/usr/bin/env python3
+#chmod a+x sasm <- when restarting terminal
+#PATH=$PATH:.
+# for future reference call using -> ./sasm [filename1] [filename2]  filename1 = file with assembly code for sic/XE filename2 = output file for object code
+"""
+DATE: May 15 2020
+AUTH: Madison Monroe
+FILE: program.py
+DESC: Assembler passes 1 and 2. Generates object code when given a SIC or SIC/XE program
+"""
+import sys
+import os
+import math
+
+indirect = False
+immediate = False
+indexed = False
+extended = False
+arrofbytes = []
+locctr = 0
+registers = ['A', 'X', 'B', 'S', 'L', 'T', 'F', 'PC', 'SW']
+registervals = [0, 1, 3, 4, 2, 5, 6, 8, 9]
+allowablechars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890:_'"
+alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+symtab = {}
+optable = {
+    "ADD" : ["m", "3 4", int("18", 16)],
+    "ADDF" : ["m", "3 4", int("58", 16)],
+    "ADDR" : ["r r", "2", int("90", 16)],
+    "AND" : ["m", "3 4", int("40", 16)],
+    "CLEAR" : ["r", "2", int("B4",16)],
+    "COMP" : ["m", "3 4", int("28", 16)],
+    "COMPF" : ["m", "3 4", int("88", 16)],
+    "COMPR" : ["r r", "2", int("A0", 16)],
+    "DIV" : ["m", "3 4", int("24", 16)],
+    "DIVF" : ["m", "3 4", int("64", 16)],
+    "DIVR" : ["r r", "2", int("9C", 16)],
+    "FIX" : ["", "1", int("C4", 16)],
+    "FLOAT" : ["", "1", int("C0", 16)],
+    "HIO" : ["", "1", int("F4", 16)],
+    "J" : ["m", "3 4", int("3C", 16)],
+    "JEQ" : ["m", "3 4", int("30", 16)],
+    "JGT" : ["m", "3 4", int("34", 16)],
+    "JLT" : ["m", "3 4", int("38", 16)],
+    "JSUB" : ["m", "3 4", int("48", 16)],
+    "LDA" : ["m", "3 4", int("00", 16)],
+    "LDB" : ["m", "3 4", int("68", 16)],
+    "LDCH" : ["m", "3 4", int("50", 16)],
+    "LDF" : ["m", "3 4", int("70", 16)],
+    "LDL" : ["m", "3 4", int("08", 16)],
+    "LDS" : ["m", "3 4", int("6C", 16)],
+    "LDT" : ["m", "3 4", int("74", 16)],
+    "LDX" : ["m", "3 4", int("04", 16)],
+    "LPS" : ["m", "3 4", int("D0", 16)],
+    "MUL" : ["m", "3 4", int("20", 16)],
+    "MULF" : ["m", "3 4", int("60", 16)],
+    "MULR" : ["r r", "2", int("98", 16)],
+    "NORM" : ["", "1", int("C8", 16)],
+    "OR" : ["m", "3 4", int("44", 16)],
+    "RD" : ["m", "3 4", int("D8", 16)],
+    "RMO" : ["r r", "2", int("AC", 16)],
+    "RSUB" : ["", "3 4", int("4C", 16)],
+    "SHIFTL" : ["r n", "2", int("A4", 16)],
+    "SHIFTR" : ["r n", "2", int("A8", 16)],
+    "SIO" : ["", "1", int("F0", 16)],
+    "SSK" : ["m", "3 4", int("EC", 16)],
+    "STA" : ["m", "3 4", int("0C", 16)],
+    "STB" : ["m", "3 4", int("78", 16)],
+    "STCH" : ["m", "3 4", int("54", 16)],
+    "STF" : ["m", "3 4", int("80", 16)],
+    "STI" : ["m", "3 4", int("D4", 16)],
+    "STL" : ["m", "3 4", int("14", 16)],
+    "STS" : ["m", "3 4", int("7C", 16)],
+    "STSW" : ["m", "3 4", int("E8", 16)],
+    "STT" : ["m", "3 4", int("84", 16)],
+    "STX" : ["m", "3 4", int("10", 16)],
+    "SUB" : ["m", "3 4", int("1C", 16)],
+    "SUBF" : ["m", "3 4", int("5C", 16)],
+    "SUBR" : ["r r", "2", int("94", 16)],
+    "SVC" : ["n", "2", int("B0", 16)],
+    "TD" : ["m", "3 4", int("E0", 16)],
+    "TIO" : ["", "1", int("F8", 16)],
+    "TIX" : ["m", "3 4", int("2C", 16)],
+    "TIXR" : ["r", "2", int("B8", 16)],
+    "WD" : ["m", "3 4", int("DC", 16)],
+
+}
+
+#splits array so ex [label:abc, ...] becomes [label:, abc, ...]
+def processcolon(arr):
+    count = 0
+    for i in arr:
+        for char in i:
+            if char  == ':':
+                count = count + 1
+
+    if count > 1:
+        print("Error")
+        sys.exit(1)
+
+    exit = False
+    #splitting after label
+    if count == 1:
+        for i in range(len(arr)):
+            if exit:
+                break
+            for j in range(len(arr[i])):
+                if arr[i][j] == ':' and len(arr[i]) > j + 1:
+                    split = arr[i][j +1:]
+                    arr[i] = arr[i][:j+ 1]
+                    arr.insert(i + 1, split)
+                    exit = True
+                    break
+
+    return arr
+
+#splits arr so that symbol is a seperate entity
+def FindAndSplit(arr, symbol):
+
+    count = 0
+    for i in arr:
+        for char in i:
+            if char  == symbol:
+                count = count + 1
+
+    if count > 1:
+        print("Error. Exiting...")
+        sys.exit(1)
+
+    if count == 1:
+        for i in range(len(arr)):
+
+            if arr[i] == symbol:
+                break
+
+            if arr[i][0] == symbol:
+                arr[i] = arr[i][1:]
+                arr.insert(i, symbol)
+                break
+
+            elif arr[i][-1] == symbol:
+                arr[i] = arr[i][:-1]
+                arr.insert(i + 1, symbol)
+                break
+
+            if symbol == ',':
+                for j in range(len(arr[i])):
+                    curr = arr[i]
+                    if curr[j] == symbol:
+                        endofarr = arr[i+1:]
+                        arr = arr[:i]
+                        arr.append(curr[:j])
+                        arr.append(curr[j])
+                        arr.append(curr[j+1:])
+                        arr = arr + endofarr
+                        return arr
+
+    return arr
+
+def updateLocctr(val, line):
+    global locctr
+    locctr = locctr + val
+
+    if locctr > 1048576: #100000 in decimal
+        print("Instruction ends beyond maximum memory address for SIC/XE:\n" + line)
+        sys.exit(1)
+
+def checkHex(val):
+    try:
+        val = int(val, 16)
+
+    except ValueError:
+        print("Error. Not a hex digit.")
+        sys.exit(1)
+
+    return True
+
+def printSorted(symtab):
+    print("Symbols:")
+    for i in sorted(symtab):
+        print("  " + i + ": " + symtab[i])
+
+def containsLabel(arr):
+    if len(arr) > 0:
+        first = arr[0]
+        if first[-1] == ":":
+            return True
+
+    return False
+
+def getLabel(arr):
+    assert containsLabel(arr), "Does not contain label"
+    label = arr[0]
+    label = label[:-1] # chops off :
+
+    #check to make sure label is allowed
+    for char in label:
+        if not char.upper().isalnum() and not char == '_':
+            print(char + " is not allowed in label.")
+            sys.exit(1)
+
+    if label[0].upper() not in alphabet and label[0].upper() != "_":
+        print(label[0] + " cannot be the first character in a label.")
+        sys.exit(1)
+
+    return label
+
+def removeSymbol(symbol, arr):
+    if containsLabel(arr):
+        index = 1
+
+    else:
+        index = 0
+
+    if len(arr) >= index + 1 and arr[index] == symbol:
+        del arr[index]
+
+        return True
+
+    elif len(arr) >= index + 1 and arr[index][0] == symbol:
+        val = arr[index][0]
+        val = arr[index][1:]
+        arr[index] = val
+
+        if symbol in arr:
+            print(symbol + " cannot be used this way. Exiting...")
+            sys.exit(1)
+
+        return True
+
+    return False
+
+def checkForPunctuation(arr, line):
+
+    containsat = '@' in line
+    containspound = '#' in line
+
+    if containsat and containspound:
+        print("Error with \n" + line + " Exiting...")
+        sys.exit(1)
+
+    if containsat:
+        arr = FindAndSplit(arr, '@')
+
+    elif containspound:
+        arr = FindAndSplit(arr, '#')
+
+
+def isCommentLine(str):
+    nonwhitespace = False
+    for char in str:
+        if not nonwhitespace and char == ".":
+            return True
+
+        if char != " ":
+            nonwhitespace = True
+
+    return False
+
+def tabify(str):
+    loc = 0
+    newstr = ""
+    for char in str:
+        if char == "\t":
+
+            while True:
+
+                newstr = newstr + " "
+                loc += 1
+
+                if (loc % 8) == 0:
+                    break
+
+        else:
+            newstr = newstr + char
+            loc += 1
+    return newstr
+
+def processlinep2(line):
+    global indirect
+    global immediate
+    global extended
+    global indexed
+
+    if line != "\n":
+        occur1 = line.upper().find("C'")
+        occur2 = line[occur1 + 2:].find("\'") + occur1 + 2
+        if occur1 != -1 and occur2 != -1:
+            contents = line[occur1:occur2 + 1]
+            line = line[:occur1] + "C''" + line[occur2 + 1:]
+            arr = line.split()
+            arr = FindAndSplit(arr, ',')
+            arr = processcolon(arr)
+            for i in range(len(arr)):
+                if arr[i] == "C''":
+                    arr[i] = contents
+
+        elif  occur1 == -1 or occur2 == -1:
+            arr = line.split()
+            arr = FindAndSplit(arr, ',')
+            arr = processcolon(arr)
+
+        if removeSymbol('+', arr):
+            extended = True
+
+        else:
+            extended = False
+
+        indirect = '@' in line
+        immediate = '#' in line
+
+        if indirect:
+            arr = FindAndSplit(arr, '@')
+
+        elif immediate:
+            arr = FindAndSplit(arr, '#')
+
+        return arr
+
+    return 0
+def outputHeader(arr, index, locctr, file):
+    arrofheaderbytes = []
+    startloc = 0
+    arrofheaderbytes.append(ord("H"))
+    if index == 1:
+        name = arr[0][:-1]
+
+    else:
+        name = ""
+    name = name[:6]
+    numspaces = 6 - len(name) # + 1 needed so : is not included in calculations
+    for i in range(numspaces):
+        arrofheaderbytes.append(ord(" "))
+
+    for char in name:
+        arrofheaderbytes.append(ord(char))
+
+    if (len(arr) == index + 2) and arr[index].upper() == "START":
+        val = arr[index + 1]
+        startloc = int(val, 16)
+        byte1 = startloc & 255
+        byte2 = startloc >> 8
+        byte2 = byte2 & 255
+        byte3 = startloc >> 16
+        byte3 = byte3 & 255
+
+    else:
+        byte1 = 0
+        byte2 = 0
+        byte3 = 0
+
+    arrofheaderbytes.append(byte3)
+    arrofheaderbytes.append(byte2)
+    arrofheaderbytes.append(byte1)
+    x = locctr - startloc
+
+    byte1 = x & 255
+    byte2 = x >> 8
+    byte2 = byte2 & 255
+    byte3 = x >> 16
+    byte3 = byte3 & 255
+
+    arrofheaderbytes.append(byte3)
+    arrofheaderbytes.append(byte2)
+    arrofheaderbytes.append(byte1)
+    arrofheaderbytes = bytearray(arrofheaderbytes)
+    file.write(arrofheaderbytes)
+
+def getSymbol(arr, index, list):
+    if list[0] == 'm':
+        if len(arr) == index + 2 or len(arr) == index + 3: # for ex. stl @ label or stl label
+            return arr[-1]
+
+        elif len(arr) == index + 1: # for stl
+            return ""
+
+        else: # for stl @ label , x or stl label, x
+            return arr[-3]
+
+    return ""
+
+def type1(opcode):
+    global arrofbytes
+    arrofbytes.append(opcode)
+
+def type2(opcode, reg1, reg2):
+    global arrofbytes
+    arrofbytes.append(opcode)
+    byte2 = reg1
+    byte2 = byte2 << 4
+    byte2 = byte2 + reg2
+    arrofbytes.append(byte2)
+
+def type3(opcode, indirect, immediate, indexed, base, pc, disp):
+    global arrofbytes
+    byte = opcode >> 2 #shifr twice to divide by 4
+    byte = byte << 1
+    if indirect:
+        byte = byte + 1
+        byte = byte << 1
+
+    elif immediate:
+        byte = byte << 1
+        byte = byte + 1
+
+    else:
+        byte = byte + 1
+        byte = byte << 1
+        byte = byte + 1
+
+    arrofbytes.append(byte)
+
+    byte2 = 0
+
+    if indexed:
+        byte2 = byte2 + 1
+
+    byte2 = byte2 << 1
+
+    if base:
+        byte2 = byte2 + 1
+
+    byte2 = byte2 << 1
+
+    if pc:
+        byte2 = byte2 + 1
+
+    byte2 = byte2 << 1
+    byte2 = byte2 << 1 # bc the E byte is never set
+
+    for i in range(4):
+        val = disp >> 11 - i
+        val = val & 1
+
+        if val == 1:
+            byte2 = byte2 + 1
+
+        byte2 = byte2 << 1
+
+    byte2 = byte2 >> 1 # prevents it from being shifted once too much
+    arrofbytes.append(byte2)
+
+    byte3 = disp & 255 #11111111b in decimal (preserves only the last 8 bits)
+    arrofbytes.append(byte3)
+
+def type4(opcode, indirect, immediate, indexed, base, pc, address):
+    global arrofbytes
+    byte = opcode >> 2 #shifr twice to divide by 4
+    byte = byte << 1
+    if indirect:
+        byte = byte + 1
+        byte = byte << 1
+
+    elif immediate:
+        byte = byte << 1
+        byte = byte + 1
+
+    else:
+        byte = byte + 1
+        byte = byte << 1
+        byte = byte + 1
+    arrofbytes.append(byte)
+
+    byte2 = 0
+
+    if indexed:
+        byte2 = byte2 + 1
+
+    byte2 = byte2 << 1
+
+    if base:
+        byte2 = byte2 + 1
+
+    byte2 = byte2 << 1
+
+    if pc:
+        byte2 = byte2 + 1
+
+    byte2 = byte2 << 1
+    byte2 = byte2 + 1 # setting E bit
+    byte2 = byte2 << 1
+
+    for i in range(4):
+        val = address >> 15 - i
+        val = val & 1
+
+        if val == 1:
+            byte2 = byte2 + 1
+
+        byte2 = byte2 << 1
+
+    byte2 = byte2 >> 1 # prevents it from being shifted once too much
+    arrofbytes.append(byte2)
+
+    byte4 = address & 255 #11111111b in decimal (preserves only the last 8 bits)
+
+    byte3 = address
+    byte3 = byte3 >> 8
+    byte3 = byte3 & 255
+
+    arrofbytes.append(byte3)
+    arrofbytes.append(byte4)
+
+def sic(opcode, X, address):
+    global arrofbytes
+
+    arrofbytes.append(opcode)
+
+    byte2 = 0
+    if X:
+        byte2 = byte2 + 1
+
+    byte2 = byte2 << 1
+    for i in range(7):
+        val = address >> 14 - i
+        val = val & 1
+        if val == 1:
+            byte2 = byte2 + 1
+
+        byte2 = byte2 << 1
+
+    byte2 = byte2 >> 1
+
+    arrofbytes.append(byte2)
+    byte3 = address & 255
+    arrofbytes.append(byte3)
+
+def pcrelative(opcode, indirect, immediate, indexed, address, locctr):
+    global arrofbytes
+
+    #calculate displacement
+    disp = address - locctr
+    if abs(disp) > 2048:
+        return False
+
+    byte = opcode >> 2 #shifr twice to divide by 4
+    byte = byte << 1
+    if indirect:
+        byte = byte + 1
+        byte = byte << 1
+
+    elif immediate:
+        byte = byte << 1
+        byte = byte + 1
+
+    else:
+        byte = byte + 1
+        byte = byte << 1
+        byte = byte + 1
+
+    arrofbytes.append(byte)
+
+    byte2 = 0
+
+    if indexed:
+        byte2 = byte2 + 1
+
+    byte2 = byte2 << 2 # shift twice bc base bit never set
+    byte2 = byte2 + 1 # setting pc byte
+
+    byte2 = byte2 << 2 # shift twice bc the E byte is never set
+
+    for i in range(4):
+        val = disp >> 11 - i
+        val = val & 1
+        if val == 1:
+            byte2 = byte2 + 1
+
+        byte2 = byte2 << 1
+
+    byte2 = byte2 >> 1 # prevents it from being shifted once too much
+    arrofbytes.append(byte2)
+
+    byte3 = disp & 255 #11111111b in decimal (preserves only the last 8 bits)
+    arrofbytes.append(byte3)
+
+    return True
+
+def basemode(opcode, indirect, immediate, indexed, address, B):
+    global arrofbytes
+
+    disp = address - B
+
+    if disp > 4096:
+        return False
+
+    byte = opcode >> 2 #shifr twice to divide by 4
+    byte = byte << 1
+    if indirect:
+        byte = byte + 1
+        byte = byte << 1
+
+    elif immediate:
+        byte = byte << 1
+        byte = byte + 1
+
+    else:
+        byte = byte + 1
+        byte = byte << 1
+        byte = byte + 1
+
+    arrofbytes.append(byte)
+
+    byte2 = 0
+
+    if indexed:
+        byte2 = byte2 + 1
+
+    byte2 = byte2 << 1
+    byte2 = byte2 + 1
+    byte2 = byte2 << 3 # shift 3 times bc never pc and e bit never set
+
+    for i in range(4):
+        val = disp >> 11 - i
+        val = val & 1
+
+        if val == 1:
+            byte2 = byte2 + 1
+
+        byte2 = byte2 << 1
+
+    byte2 = byte2 >> 1 # prevents it from being shifted once too much
+    arrofbytes.append(byte2)
+
+    byte3 = disp & 255 #11111111b in decimal (preserves only the last 8 bits)
+    arrofbytes.append(byte3)
+    return True
+
+def outputTextRecord(objcode, textrecstartloc, file, locctr):
+    arrofbytes = []
+    arrofbytes.append(ord("T"))
+    byte1 = textrecstartloc & 255
+    byte2 = textrecstartloc >> 8
+    byte2 = byte2 & 255
+    byte3 = textrecstartloc >> 16
+    byte3 = byte3 & 255
+
+    arrofbytes.append(byte3)
+    arrofbytes.append(byte2)
+    arrofbytes.append(byte1)
+
+
+    length = locctr - textrecstartloc
+
+    byte1 = length & 255
+    arrofbytes.append(byte1)
+
+    arrofbytes = bytearray(arrofbytes)
+    file.write(arrofbytes)
+
+    objcode = bytearray(objcode)
+    file.write(objcode)
+
+def outputEnd(startloc, file):
+    arrofbytes = []
+    arrofbytes.append(ord("E"))
+    byte1 = startloc & 255
+    byte2 = startloc >> 8
+    byte2 = byte2 & 255
+    byte3 = startloc >> 16
+    byte3 = byte3 & 255
+
+    arrofbytes.append(byte3)
+    arrofbytes.append(byte2)
+    arrofbytes.append(byte1)
+
+    arrofbytes = bytearray(arrofbytes)
+    file.write(arrofbytes)
+
+def pass2():
+    global arrofbytes
+    global locctr
+    global extended
+    global indirect
+    global indexed
+    global immediate
+    textrecstartloc = 0
+    base = False
+    maxloc = locctr
+    locctr = 0
+    startprocessed = False
+    objectfile = open(sys.argv[2], "wb")
+    intermediatefile = open("intermediatefile.txt", "r")
+
+    while True:
+        line = intermediatefile.readline()
+        arr = processlinep2(line)
+        if arr != 0:
+
+            if not ((len(arr) == 1 and containsLabel(arr)) or len(arr) < 1):
+                if containsLabel(arr):
+                    index = 1
+
+                else:
+                    index = 0
+
+                if len(arr) >= index + 3 and arr[-1].upper() == "X" and arr[-2] == ",":
+                    indexed = True
+
+                else:
+                    indexed = False
+                opcode = arr[index].upper()
+
+                if opcode == "START":
+                    outputHeader(arr, index, maxloc, objectfile)
+                    startprocessed = True
+
+                    if len(arr) == index + 2:
+                        textrecstartloc = int(arr[index + 1], 16)
+                        locctr = int(arr[index + 1], 16)
+
+                elif opcode in optable:
+                    list = optable[arr[index].upper()]
+
+                    if list[0] == 'm':
+                        symbol = getSymbol(arr, index, list)
+                        if symbol == "":
+                            address = 0
+
+                        elif symbol.isdigit():
+                            address = int(symbol)
+
+                        elif symbol.upper() not in symtab:
+                            print("Error." + symbol + " not in symbol table.\n" + line)
+                            sys.exit(1)
+
+                        else:
+                            address = int(symtab[symbol.upper()], 16)
+
+                        if extended:
+                            locctr = locctr + 4
+                            type4(list[2], indirect, immediate, indexed, False, False, address)
+
+                        else:
+                            locctr = locctr + 3
+                            if not (base and basemode(list[2], indirect, immediate, indexed, address, Breg)):
+                                if not pcrelative(list[2], indirect, immediate, indexed, address, locctr):
+                                    if address <= 4096:
+                                        type3(list[2], indirect, immediate, indexed, False, False, address)
+
+                                    elif address <= 32768:
+                                        sic(list[2], indexed, address)
+
+                                    else:
+                                        print("Extended mode is needed")
+                                        sys.exit(1)
+
+                    elif list[0] == "r r":
+                        reg1 = arr[index + 1].upper()
+                        reg2 = arr[-1].upper()
+                        locctr = locctr + 2
+
+                        for i in range(len(registers)):
+                            if registers[i] == reg1:
+                                reg1 = registervals[i]
+
+                            if registers[i] == reg2:
+                                reg2 = registervals[i]
+
+                        type2(list[2], reg1, reg2)
+
+                    elif list[0] == "r":
+                        reg1 = arr[-1].upper()
+                        locctr = locctr + 2
+
+                        for i in range(len(registers)):
+                            if registers[i] == reg1:
+                                reg1 = registervals[i]
+
+                        type2(list[2], reg1, 0)
+
+                    elif list[0] == "r n":
+                        reg1 = arr[index + 1].upper()
+                        locctr = locctr + 2
+                        nval = int(arr[index + 3])
+
+                        for i in range(len(registers)):
+                            if registers[i] == reg1:
+                                reg1 = registervals[i]
+
+                        type2(list[2], reg1, (nval - 1))
+
+                    elif  list[0] == "n":
+                        nval = int(arr[-1])
+                        locctr = locctr + 2
+                        type2(list[2], nval, 0)
+
+                    elif list[0] == "":
+                        if opcode == "RSUB":
+                            locctr = locctr + 3
+                            type3(list[2], False, False, False, False, False, 0)
+
+                        else:
+                            locctr = locctr + 1
+                            type1(list[2])
+
+                    else:
+                        print("this instruction is not currently allowed\n" + line)
+                        sys.exit(0)
+
+                elif opcode == "WORD":
+                    locctr = locctr + 3
+                    x = int (arr[index + 1])
+                    byte1 = x & 255
+                    byte2 = x >> 8
+                    byte2 = byte2 & 255
+                    byte3 = x >> 16
+                    byte3 = byte3 & 255
+                    arrofbytes.append(byte3)
+                    arrofbytes.append(byte2)
+                    arrofbytes.append(byte1)
+
+                elif opcode == "BYTE":
+                    if arr[index + 1].isdigit():
+                        locctr = locctr + 1
+                        arrofbytes.append(int(arr[index + 1]))
+
+                    elif arr[-1][0].upper() == "C":
+                        contents = arr[-1][2:-1]
+                        for i in range(len(contents)):
+                            val = contents[i]
+                            arrofbytes.append(ord(val))
+                        locctr = locctr + len(contents)
+
+                    elif arr[-1][0].upper() == "X":
+                        contents = arr[-1][2:-1]
+                        size = len(contents) / 2
+                        size = int(math.ceil(size))
+                        locctr = locctr + size
+                        bytes = []
+                        val = int(contents, 16)
+                        for i in range(size):
+                            x = val & 255
+                            bytes.append(x)
+                            val = val >> 8
+
+                        bytes.reverse()
+                        for i in range(len(bytes)):
+                            arrofbytes.append(bytes[i])
+
+                elif opcode == "RESW":
+                    val = int(arr[index + 1])
+                    if (locctr - textrecstartloc) > 0: #added in since last submit
+                        outputTextRecord(arrofbytes, textrecstartloc, objectfile, locctr)
+                    arrofbytes = []
+                    locctr = locctr + (3 * val)
+                    textrecstartloc = locctr
+
+                elif opcode == "RESB":
+                    val = int(arr[index + 1])
+                    if (locctr - textrecstartloc) > 0: #added in since last submit
+                        outputTextRecord(arrofbytes, textrecstartloc, objectfile, locctr)
+                    arrofbytes = []
+                    locctr = locctr + val
+                    textrecstartloc = locctr
+
+                elif opcode == "BASE":
+                    base = True
+                    Breg = int(arr[-1])
+
+                elif opcode == "NOBASE":
+                    base = False
+
+                if not startprocessed:
+                    outputHeader(arr, index, maxloc, objectfile)
+                    startprocessed = True
+
+                if (locctr - textrecstartloc) > 64:
+                    overflow = 1
+                    temp = []
+
+                    while True:
+                        temp.append(arrofbytes[-overflow])
+                        if locctr - overflow - textrecstartloc == 64:
+                            break
+                        overflow = overflow + 1
+                    temp.reverse()
+                    arrofbytes = arrofbytes[: -overflow]
+                    outputTextRecord(arrofbytes, textrecstartloc, objectfile, locctr - overflow)
+                    arrofbytes = []
+                    for i in range(len(temp)):
+                        arrofbytes.append(temp[i])
+
+                    textrecstartloc = locctr - overflow
+
+                elif opcode == "END":
+                    if (locctr - textrecstartloc) > 0:
+                        outputTextRecord(arrofbytes, textrecstartloc, objectfile, locctr)
+
+                    if len(arr) > index + 1:
+                        label = arr[index + 1]
+                        loc = int(symtab[label.upper()], 16)
+
+                    else:
+                        loc = 0
+                    outputEnd(loc, objectfile)
+                    sys.exit(0)
+
+    sys.exit(1)
+
+def pass1():
+    global locctr
+    emptyfile = True
+    extendedmode = False
+    filepath = sys.argv[1]
+    intermediatefile = open("intermediatefile.txt", "w")
+
+    if not os.path.isfile(filepath):
+        print("File path {} does not exist. Exiting...".format(filepath))
+        sys.exit(1)
+
+    file = open(filepath, 'r')
+
+    while True:
+        line = file.readline()
+        line = tabify(line)
+        if isCommentLine(line):
+            line = "\n"
+        length = len(line)
+        line = line[:40]
+        if length > 40:
+            line = line + "\n"
+
+        arr = line.split()
+
+        if len(arr) > 0:
+            break
+
+    startprocessed = False
+    if line.upper().find("START") != -1:
+        startprocessed = False
+
+        for i in arr:
+            for char in i:
+                if char.upper() not in allowablechars:
+                    print("Error symbol " + char +" not allowed in this context. Exiting...")
+                    sys.exit(1)
+
+        first = arr[0]
+        if first[-1] == ":":
+
+            if len(arr) > 1 and arr[1].upper() == "START": # label is first thing and start is second
+                if len(arr) == 2: # nothing after START
+                    locctr = 0
+
+                elif len(arr) == 3: # something after START
+                    val = arr[2]
+                    if checkHex(val):
+                        val = int(val, 16)
+                        if val > 1048575: #FFFFF is hex
+                            print("The start value you enter cannot be larger than FFFFF. Exiting...")
+                            file.close()
+                            sys.exit(1)
+                        updateLocctr(val, line)
+                    else:
+                        print(val + " is not an allowed digit. Exiting...")
+                        file.close()
+                        sys.exit(1)
+                if len(arr) > 3:
+                    print("Extranious characters at the end of line. (", end = "")
+                    for i in range(len(arr)):
+                        if i > 2:
+                            print(arr[i], end = " ")
+
+                    print(")")
+
+            elif arr[1].upper() != "START":
+                print("Error with START on this line." + line + "Exiting...")
+                file.close()
+                sys.exit(1)
+
+        elif first.upper() == "START":
+            if len(arr) == 1:
+                locctr = 0
+
+            elif len(arr) == 2:
+                val = arr[1]
+                if checkHex(val):
+                    val = int(val, 16)
+                    if val > 1048575:
+                        print("The start value you enter cannot be larger than FFFFF. Exiting...")
+                        file.close()
+                        sys.exit(1)
+
+                    updateLocctr(val, line)
+                else:
+                    print(val + " is not an allowed digit. Exiting...")
+                    file.close()
+                    sys.exit(1)
+
+
+            elif len (arr) > 2:
+                print("Extranious characters at the end of line. (")
+                for i in range(len(arr), end = ""):
+                    if i > 2:
+                        print(" {}").format(arr[i], end =" ")
+
+                print(")")
+
+        else:
+            print("Error. Exiting...")
+            file.close()
+            sys.exit(1)
+
+    else:
+        locctr = 0
+
+    while True:
+        if startprocessed:
+            line = file.readline()
+
+        if not line:
+            break
+
+        occur1 = line.upper().find("C'")
+        occur2 = line[occur1 + 2:].find("\'") + occur1 + 2
+
+        if occur1 != -1 and occur2 != -1:
+             contents = line[occur1:occur2 + 1]
+
+        line = tabify(line)
+
+        length = len(line)
+        line = line[:40]
+
+        if length > 40:
+            line = line + "\n"
+
+        if isCommentLine(line):
+            line = "\n"
+
+
+        if line != "\n": # if the line is not a comment line
+
+            if  occur1 == -1 or occur2 == -1:
+                arr = line.split()
+                arr = FindAndSplit(arr, ',')
+                arr = processcolon(arr)
+
+            #processes if ex c' '
+            if occur1 != -1 and occur2 != -1:
+                occur1 = line.upper().find("C'") # has to find again bc tabbing can change it
+                occur2 = line[occur1 + 2:].find("\'") + occur1 + 2 # has to be done again bc tabbing can change loc
+
+                line = line[:occur1] + "C''" + line[occur2 + 1:]
+
+                arr = line.split()
+                arr = FindAndSplit(arr, ',')
+                arr = processcolon(arr)
+                for i in range(len(arr)):
+                    if arr[i] == "C''":
+                        arr[i] = contents
+
+                line = line[:occur1] + contents + line[occur2 + 1:] + "\n"
+
+            if removeSymbol('+', arr):
+                extendedmode = True
+
+            else:
+                extendedmode = False
+
+            checkForPunctuation(arr, line)
+
+            if containsLabel(arr):
+                label = getLabel(arr)
+                label = label.upper()
+                if label in registers:
+                    print("Register used where label expected:" + line + "\n Exiting...")
+                    sys.exit(1)
+
+                if label in symtab:
+                    print("previously defined symbol " + label + ":")
+                    print(line)
+                    sys.exit(1)
+
+                hexval = hex(locctr).lstrip("0x").upper()
+                while len(hexval) != 6:
+                    hexval = "0" + hexval
+
+                symtab[label] = hexval
+
+            if not ((len(arr) == 1 and containsLabel(arr)) or len(arr) < 1):
+                if containsLabel(arr):
+                    index = 1
+
+                else:
+                    index = 0
+
+                if arr[index].upper() in optable:
+                    list = optable[arr[index].upper()]
+                    if list[0]== "":
+                        if arr[index].upper() == "RSUB":
+                            if extendedmode:
+                                updateLocctr(4, line)
+
+                            else:
+                                updateLocctr(3, line)
+
+                        else:
+                            updateLocctr(1, line)
+
+                        if (len(arr) != index + 1):
+                            print("Error with \n" + line + " Exiting...")
+                            sys.exit(1)
+
+                        if extendedmode and arr[index].upper() != "RSUB":
+                            print("Error with \n" + line + " Can't use extended mode in this instance. Exiting...")
+                            sys.exit(1)
+
+                    elif list[0] == "m":
+                        if extendedmode:
+                            updateLocctr(4, line)
+                        else:
+                            updateLocctr(3, line)
+
+                        othermode = False # other mode is then # or @ are present
+                        if len(arr) == index + 3 and (arr[index + 1] == '@' or arr[index + 1] == '#'):
+                            othermode = True
+
+                        if (len(arr) == index + 2) or (len(arr) == index + 4) or othermode:
+
+                            if not othermode:
+                                val = arr[index + 1]
+
+                            else:
+                                val = arr[index + 2]
+
+                            if val.upper() in registers:
+                                print("Error with \n" + line + " You cannot have a register where a symbol is expected. Exiting...")
+                                sys.exit(1)
+
+                            for char in val:
+                                if char.upper() not in allowablechars:
+                                    print("Error " + char + " not allowed.\n" + line)
+                                    sys.exit(1)
+
+                            if len(arr) == index + 4 and ((arr[index + 2] != ',' or arr[index + 3].upper() != 'X')):
+                                print("Error with \n" + line + "Exiting...")
+                                sys.exit(1)
+
+                        else:
+                            print("Error with \n" + line + "Exiting...")
+                            sys.exit(1)
+
+                    elif list[0] == "r r":
+
+                        if extendedmode:
+                            print("Error with \n" + line + " Can't use extended mode in this instance. Exiting...")
+                            sys.exit(1)
+
+                        if len(arr) == index + 4:
+                            for i in range(3):
+                                val = arr[index + 1 + i]
+
+                                if i == 1:
+                                    if val != ",":
+                                        print("Error. Expected comma.\n" + line)
+                                        sys.exit(1)
+
+                                elif not (val.upper() in registers):
+                                    print("Error with \n" + line + "Invalid register provided. Exiting...")
+                                    sys.exit(1)
+
+                            updateLocctr(2, line)
+
+                        else:
+                            print("Error with \n" + line + "Exiting...")
+                            sys.exit(1)
+
+
+                    elif list[0] == "r":
+                        if extendedmode:
+                            print("Error with \n" + line + " Can't use extended mode in this instance. Exiting...")
+                            sys.exit(1)
+
+                        updateLocctr(2, line)
+                        if len(arr) == index + 2:
+                            val = arr[index + 1]
+                            if not (val.upper() in registers):
+                                print("Error with \n" + line + "Invalid register provided. Exiting...")
+                                sys.exit(1)
+
+                        else:
+                            print("Error with \n" + line + "Exiting...")
+                            sys.exit(1)
+
+                    elif list[0] == "n":
+                        if extendedmode:
+                            print("Error with \n" + line + " Can't use extended mode in this instance. Exiting...")
+                            sys.exit(1)
+
+                        updateLocctr(2, line)
+                        if len(arr) == index + 2:
+                            if arr[index + 1].isdigit():
+                                val = int(arr[index + 1])
+                                if val < 1 or val > 16:
+                                    print("Error with \n" + line + " Illegal constant. Exiting...")
+                                    sys.exit(1)
+
+                            else:
+                                print("Error with \n" + line + " Value entered is not an allowed digit. Exiting...")
+                                sys.exit(1)
+                        else:
+                            print("Error with \n" + line + " Exiting...")
+                            sys.exit(1)
+
+                    elif list[0] == "r n":
+                        if extendedmode:
+                            print("Error with \n" + line + " Can't use extended mode in this instance. Exiting...")
+                            sys.exit(1)
+
+                        updateLocctr(2, line)
+                        if len(arr) == index + 4:
+                            val = arr[index + 1]
+                            if not (val.upper() in registers):
+                                print("Error with \n" + line + "Invalid register provided. Exiting...")
+                                sys.exit(1)
+
+                            if arr[index + 3].isdigit():
+                                val = int(arr[index + 3])
+                                if val < 1 or val > 16:
+                                    print("Error with \n" + line + " Illegal shift amount. Exiting...")
+                                    sys.exit(1)
+
+                            else:
+                                print("Error with \n" + line + " Value entered is not an allowed digit. Exiting...")
+                                sys.exit(1)
+
+                            if arr[index + 2] != ",":
+                                print("Error with \n" + line + " Value entered is not an allowed digit. Exiting...")
+                                sys.exit(1)
+
+                        else:
+                            print("Error with \n" + line + "Exiting...")
+                            sys.exit(1)
+
+                elif arr[index].upper() == "WORD":
+
+                    if extendedmode:
+                        print("Error with \n" + line + " Can't use extended mode in this instance. Exiting...")
+                        sys.exit(1)
+
+                    if len(arr) == (index + 2):
+                        val = arr[index + 1]
+                        if val[0] == "+" or val[0] == "-":
+                            val = val[1:]
+
+                        if val.isdigit():
+
+                            if int(arr[index + 1]) > 16777215:
+                                print("Constant exceeds word range. \n" + line)
+                                sys.exit(1)
+                            updateLocctr(3, line)
+
+                        else:
+                            print("Error with \n" + line + " Exiting...")
+                            sys.exit(1)
+
+                    else:
+                        print("Error with \n" + line + " Exiting...")
+                        sys.exit(1)
+
+                elif arr[index].upper() == "RESW" or arr[index].upper() == "RESB":
+                    if len(arr) == (index + 2) and arr[index + 1].isdigit():
+                        reserveval = int(arr[index +1])
+                        if reserveval == 0:
+                            print("Directive reserves no space. Exiting...")
+                            print(line)
+                            sys.exit(1)
+
+                        if extendedmode:
+                            print("Error with \n" + line + " Can't use extended mode in this instance. Exiting...")
+                            sys.exit(1)
+
+                        if arr[index].upper() == "RESW":
+                            val = (3 * reserveval)
+                            updateLocctr(val, line)
+
+                        else:
+                            updateLocctr(reserveval, line)
+
+                    else:
+                        print("Error with \n" + line + " Exiting...")
+                        sys.exit(1)
+
+                elif arr[index].upper() == "BYTE":
+                    if extendedmode:
+                        print("Error with \n" + line + " Can't use extended mode in this instance. Exiting...")
+                        sys.exit(1)
+
+                    if len(arr) == (index + 2):
+                        val = arr[index + 1]
+                        if val[0].upper() == 'C' and val[1] == '\'' and val[-1] == '\'' and val.count("\'") == 2 and len(val) > 3:
+                            contents = val[2:-1] #gets rid of c''
+                            if len(contents) > 21:
+                                print("Error with \n" + line + " Exiting...")
+                                sys.exit(1)
+                            updateLocctr(len(contents), line)
+
+                        elif val[0].upper() == 'X'  and val[1] == '\''  and val[-1] == '\'' and val.count("\'") == 2 and len(val) > 3:
+                            contents = val[2:-1] #gets rid of x''
+                            if len(contents) > 21:
+                                print("Error with \n" + line + " Exiting...")
+                                sys.exit(1)
+                            if checkHex(contents):
+                                size = len(contents) / 2
+                                size = int(math.ceil(size))
+                                updateLocctr(size, line)
+                        else:
+                            if val[0] == "+" or val[0] == "-":
+                                val = val[1:]
+
+                            if val.isdigit():
+                                if int(val) > 255:
+                                    print("Constant exceeds byte range\n" + line)
+                                    sys.exit()
+
+                                else:
+                                    updateLocctr(1, line)
+
+                            else:
+                                print("Error with line\n" + line + "Exiting...")
+                                sys.exit(1)
+
+                    else:
+                        print("Error with \n" + line + " Exiting...")
+                        sys.exit(1)
+
+
+                elif  arr[index].upper() == "END":
+                    if extendedmode:
+                        print("Error with \n" + line + " Can't use extended mode in this instance. Exiting...")
+                        sys.exit(1)
+
+                    if emptyfile:
+                        print("Error with \n" + line + "No code or data in assembly file. Exiting...")
+                        sys.exit(1)
+
+                    if len(arr) == index + 1:
+                        printSorted(symtab)
+                        intermediatefile.write(line)
+                        intermediatefile.close()
+                        pass2()
+
+                    elif len(arr) == index + 2:
+                        if arr[index + 1].isdigit():
+                            val = int(arr[index + 1])
+                            if val > 16777215:
+                                print("Constant exceeds word range.")
+                                print(line + "Exiting...")
+                                sys.exit(1)
+
+                            else:
+                                printSorted(symtab)
+                                intermediatefile.write(line)
+                                intermediatefile.close()
+                                pass2()
+                        else:
+                            if not (arr[index + 1].upper() in symtab):
+                                print("Error with \n" + line + " Undefined symbol " + arr[index + 1] + ". Exiting...")
+                                sys.exit(1)
+
+                            else:
+                                printSorted(symtab)
+                                intermediatefile.write(line)
+                                intermediatefile.close()
+                                pass2()
+
+
+                elif arr[index].upper() == "BASE":
+                    if len(arr) == index + 2:
+                        if arr[index + 1].upper() in registers:
+                            print("Error with \n" + line + "Register used where symbol expected. Exiting...")
+                            sys.exit(1)
+
+                    else:
+                        print("Error with \n" + line + "Exiting...")
+                        sys.exit(1)
+
+                elif arr[index].upper() == "NOBASE":
+                    if len(arr) != index + 1:
+                        print("Error with \n" + line + "Register used where symbol expected. Exiting...")
+                        sys.exit(1)
+
+                elif arr[index].upper() != "START" or ( arr[index].upper() == "START" and startprocessed):
+                    print(line)
+                    print("error right here. Exiting...")
+                    sys.exit(1)
+
+            elif not ((len(arr) == 1 and containsLabel(arr)) or len(arr) < 1):
+                print(line)
+                print("error here. Exiting...")
+                sys.exit(1)
+
+        intermediatefile.write(line)
+        startprocessed = True
+
+        if not ((len(arr) == 1 and containsLabel(arr)) or len(arr) < 1) and arr[index].upper() != "NOBASE" and arr[index].upper() != "BASE" and arr[index].upper() != "START":
+            emptyfile = False
+
+    print("Missing end directive.")
+    sys.exit(1)
+
+def main():
+    pass1()
+
+if __name__ == "__main__":
+    main()
